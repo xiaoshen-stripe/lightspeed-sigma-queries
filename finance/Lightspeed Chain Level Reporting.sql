@@ -1,4 +1,4 @@
--- calendar_days is a temporary table with a row and value for every day for the past 1 month
+-- calendar_days is a temporary table with a row and value for every day between the timestamps
 with calendar_days as (
   select
     date(day) as day
@@ -25,8 +25,12 @@ daily_balance_transactions as (
     sum(case when type in ('payment_refund', 'refund') then amount else 0 end) as refunds,
     sum(case when type = 'adjustment' and lower(description) like 'chargeback withdrawal%' then amount else 0 end) as disputes,
     sum(case when type = 'adjustment' and lower(description) like 'chargeback reversal%' then amount else 0 end) as disputes_won,
-    sum(case when type in('application_fee', 'application_fee_refund') then amount else 0 end) as payfac_fees,
---    sum(case when type = 'network_cost'  then amount else 0 end) as interchange, --uncomment this one if you want to look at interchange on a cash basis rather than revenue/cost accrual basis
+    sum(case when type = 'adjustment' and lower(description) like 'chargeback%' then fee else 0 end) as stripe_dispute_fees,
+    sum(case when type in('application_fee', 'application_fee_refund') then amount else 0 end) as ls_payfac_fees,
+    sum(case when type = 'network_cost' then -amount else 0 end) as interchange_cash,
+    sum(case when type = 'stripe_fee' and lower(description) like 'card payments%' then -amount else 0 end) as stripe_icplus_fees_cash,
+    sum(case when type = 'stripe_fee' and lower(description) not like 'card payments%' and lower(description) not like 'sigma%' and lower(description) not like '%active reader fee' and lower(description) not like 'connect%' then -amount else 0 end) as stripe_other_fees_daily_cash,
+    sum(case when type = 'stripe_fee' and (lower(description) like 'sigma%' or lower(description) like '%active reader fee' or lower(description) like 'connect%') then -amount else 0 end) as stripe_other_fees_monthly_cash,
     count_if(type in ('payment', 'charge')) as captured_authorizations_count,
     count_if(type in ('payment_refund', 'refund')) as refund_count,
     count(distinct case when type = 'adjustment' and lower(description) like 'chargeback withdrawal%' then source_id end) as dispute_count,
@@ -57,24 +61,40 @@ daily_platform_payouts as (
   select
     date(transfers.date) as day,
     sum(amount) as platform_payouts,
-    count(id) as platform_payout_count
+    count(id) as platform_payout_count,
+    status
   from transfers
-  where status = 'paid'
+  where status in('paid', 'in_transit', 'pending')
   and type='bank_account'
   and date(created) >= (select min(calendar_days.day) from calendar_days)
   and date(created) <= (select max(calendar_days.day) from calendar_days)
-  group by 1
+  group by 1, 4
 ),
---use this table if you want to check interchange on a revenue/cost recognition basis rather than cash
-daily_payment_fees as(
+--temporary table for incurred fees
+daily_payments_incurred_fees as(
   select 
     date(incurred_at) as day,
-    sum(case when fee_category = 'network_cost' then billing_amount else 0 end) as interchange,
-    sum(case when fee_category = 'stripe_fee' then billing_amount else 0 end) as stripe_fees
+    sum(case when fee_category = 'network_cost' then billing_amount else 0 end) as daily_interchange,
+    sum(case when fee_category = 'stripe_fee' then billing_amount else 0 end) as daily_stripe_icplus_fees
   from icplus_fees 
   where date(incurred_at) >= (select min(calendar_days.day) from calendar_days)
   and date(incurred_at) <= (select max(calendar_days.day) from calendar_days)
+  and attribution_start_time is null
+  and attribution_end_time is null
+  group by 1
 ),
+--temporary table for attributed fees
+daily_payments_attributed_fees as(
+  select 
+    date(day) as day,
+    sum(case when date(day) between attribution_start_time and attribution_end_time then (billing_amount / date_diff('day', attribution_start_time, attribution_end_time)) else 0 end) as attr_interchange
+  from calendar_days
+  cross join icplus_fees 
+  where date(attribution_end_time) >= (select min(calendar_days.day) from calendar_days)
+    and date(attribution_start_time) <= (select max(calendar_days.day) from calendar_days)
+  group by 1
+),
+
 --daily_connect_payouts is a temporary table that aggregates
 -- the connect account payouts
 daily_connect_payouts as (
@@ -83,12 +103,13 @@ daily_connect_payouts as (
     sum(amount) as connect_payouts,
     count(id) as connect_payout_count
   from connected_account_transfers
-  where status = 'paid'
+  where status in('paid')
   and type in('bank_account','card')
   and date(connected_account_transfers.date) >= (select min(calendar_days.day) from calendar_days)
   and date(connected_account_transfers.date) < (select max(calendar_days.day) from calendar_days)
   group by 1
 )
+
 --
 -- Join temporary tables, and format output for reporting display
 -- Note: if you have currencies that do not have cents (e.g. JPY), you should not divide by 100.0
@@ -100,9 +121,17 @@ select
   coalesce(declines/100.0, 0) as declines,
   coalesce(disputes/100.0, 0) as disputes,
   coalesce(disputes_won/100.0, 0) as disputes_won,
-  coalesce(payfac_fees/100.0, 0) as payfac_fees,
-  coalesce(interchange/100.0, 0) as interchange,
+  coalesce(stripe_dispute_fees/100.0, 0) as stripe_dispute_fees,
+  coalesce(ls_payfac_fees/100.0, 0) as ls_payfac_fees,
   coalesce(platform_payouts/100.0, 0) as platform_payouts,
+  daily_platform_payouts.status as platform_payout_status,
+  coalesce(daily_interchange/100.0, 0) as interchange_rec,
+  coalesce(attr_interchange/100.0, 0) as attr_interchange_rec,
+  coalesce(daily_stripe_icplus_fees/100.0, 0) as stripe_icplus_fees_rec,
+  coalesce(interchange_cash/100.0, 0) as interchange_cash,
+  coalesce(stripe_icplus_fees_cash/100.0, 0) as stripe_icplus_fees_cash,
+  coalesce(stripe_other_fees_daily_cash/100.0, 0) as stripe_other_fees_daily_cash,
+  coalesce(stripe_other_fees_monthly_cash/100.0, 0) as stripe_other_fees_monthly_cash,
   coalesce(connect_payouts/100.0, 0) as connect_payouts,
   coalesce(captured_authorizations_count, 0) as captured_authorizations_count,
   coalesce(refund_count, 0) as refund_count,
@@ -120,8 +149,10 @@ left join daily_declines
   on calendar_days.day = daily_declines.day 
 left join daily_platform_payouts
   on calendar_days.day = daily_platform_payouts.day
-left join daily_payment_fees 
-  on calendar_days.day = daily_payment_fees.day
+left join daily_payments_incurred_fees 
+  on calendar_days.day = daily_payments_incurred_fees.day
+left join daily_payments_attributed_fees 
+  on calendar_days.day = daily_payments_attributed_fees.day
 left join daily_connect_payouts
   on calendar_days.day = daily_connect_payouts.day 
 where

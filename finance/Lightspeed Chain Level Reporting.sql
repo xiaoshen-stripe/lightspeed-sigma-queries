@@ -1,4 +1,5 @@
 -- calendar_days is a temporary table with a row and value for every day between the timestamps
+-- To edit the dates for this query, change the dates in sequence() 
 with calendar_days as (
   select
     date(day) as day
@@ -7,6 +8,7 @@ with calendar_days as (
   ) as t(day)
 ),
 -- daily_connect_accounts is a temporary table that counts the number of active connect accounts per day
+-- a connect account is considered active if it has attempted any transactions for the day
 daily_connect_accounts as (
   select 
     date(created) as day,
@@ -17,7 +19,7 @@ daily_connect_accounts as (
   group by 1
 ),
 -- daily_balance_transactions is a temporary table that aggregates and pivots different
--- balance_transaction types on a daily basis for each currency
+-- balance_transaction types on a daily basis
 daily_balance_transactions as (
   select
     date(created) as day,
@@ -29,8 +31,11 @@ daily_balance_transactions as (
     sum(case when type in('application_fee', 'application_fee_refund') then amount else 0 end) as ls_payfac_fees,
     sum(case when type = 'network_cost' then -amount else 0 end) as interchange_cash,
     sum(case when type = 'stripe_fee' and lower(description) like 'card payments%' then -amount else 0 end) as stripe_icplus_fees_cash,
+    -- Stripe fees with "card payments" in the description refer to Stripe's portion of Interchange Plus pricing
     sum(case when type = 'stripe_fee' and lower(description) not like 'card payments%' and lower(description) not like 'sigma%' and lower(description) not like '%active reader fee' and lower(description) not like 'connect%' then -amount else 0 end) as stripe_other_fees_daily_cash,
+    -- Look for all non-"card payments" Stripe fees that are not billed on a monthly basis (non-Sigma, non-Connect, non-Terminal Active Reader)
     sum(case when type = 'stripe_fee' and (lower(description) like 'sigma%' or lower(description) like '%active reader fee' or lower(description) like 'connect%') then -amount else 0 end) as stripe_other_fees_monthly_cash,
+    -- Look for all monthly Stripe fees -- Sigma, Active Reader fees, and Connect fees are all monthly fee
     count_if(type in ('payment', 'charge')) as captured_authorizations_count,
     count_if(type in ('payment_refund', 'refund')) as refund_count,
     count(distinct case when type = 'adjustment' and lower(description) like 'chargeback withdrawal%' then source_id end) as dispute_count,
@@ -43,7 +48,7 @@ daily_balance_transactions as (
 ),
 --
 -- daily_declines is a temporary table that aggregates
--- declines on a daily basis for each currency
+-- declines on a daily basis 
 daily_declines as (
   select
     date(created) as day,
@@ -56,7 +61,7 @@ daily_declines as (
   group by 1
 ),
 --daily_platform_payouts is a temporary table that aggregates
--- the platform payouts
+-- the platform payouts (Lightspeed's Payfac fees)
 daily_platform_payouts as (
   select
     date(transfers.date) as day,
@@ -70,7 +75,8 @@ daily_platform_payouts as (
   and date(created) <= (select max(calendar_days.day) from calendar_days)
   group by 1, 4
 ),
---temporary table for incurred fees
+-- daily_payments_incurred_fees is a temporary table that attributes network + Stripe Interchange Plus fees
+-- on a daily basis (rev/costrec, not cash)
 daily_payments_incurred_fees as(
   select 
     date(incurred_at) as day,
@@ -83,7 +89,8 @@ daily_payments_incurred_fees as(
   and attribution_end_time is null
   group by 1
 ),
---temporary table for attributed fees
+-- daily_payments_attributed_fees is a temporary table that attributes monthly network adjustments to
+-- to per-day assumption (simply flatlines across the entire month, although this is likely not accurate)
 daily_payments_attributed_fees as(
   select 
     date(day) as day,

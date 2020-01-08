@@ -1,11 +1,12 @@
   
 -- calendar_days is a temporary table with a row and value for every day between the timestamps
 -- To edit the dates for this query, change the dates in sequence() 
+-- utc time should be used before 10/6, since that's when global cutoff came into play 
 with calendar_days as (
   select
     date(day) as day
   from unnest(
-    sequence(date('2019-10-07'), date('2019-11-06'), interval '1' day)
+    sequence(date('2019-09-01'), date('2019-09-30'), interval '1' day)
   ) as t(day)
 ),
 

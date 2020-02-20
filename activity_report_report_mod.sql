@@ -34,7 +34,7 @@ select
 -- ksr is interested in the breakdown of different european markets. So only eur related items are of interest
 currency_selection as (
 select
-  '*' as currency_selected
+  'usd' as currency_selected
 ),
 -- connected_account_country as (
 -- select
@@ -460,12 +460,14 @@ line_items as (
   left join automatic_payouts
     on automatic_payouts.id = line_items_partial.automatic_payout_id
 ),
-application_fee_bts as (
+charge_application_fee_bts as (
     select
        balance_transaction_id
     from line_items 
     where 
-       balance_transactions_component = 'payment_fee'
+       balance_transaction_component = 'payments_fee'
+       and balance_transaction_reporting_category = 'charge' 
+       -- only focus on the charges
 )
 
 -- Query the resulting line_items table to format them for human CSV consumption in the activity itemized report
@@ -498,7 +500,13 @@ select
   activity_interval_type,
   date_format(activity_start_date, '%Y-%m-%d') as activity_start_date,
   date_format(activity_end_date, '%Y-%m-%d') as activity_end_date,
-  balance_transaction_description
+  balance_transaction_description, 
+  case
+     when charge_id not like 'py_%' then 'charges'
+     when charge_id like 'py_%' and line_items.balance_transaction_id in (select * from charge_application_fee_bts) then 'chargeback_fees'
+     else 'unlinked_refunds'
+  end as charge_type
+
 --   coalesce(
 --     connected_account_country.country,
 --     application_fees_account_country_info.country,
@@ -509,6 +517,8 @@ from line_items
 -- left join application_fees_account_country_info on line_items.balance_transaction_id = application_fees_account_country_info.balance_transaction_id
 -- left join application_fees_refunds_account_country_info on line_items.balance_transaction_id = application_fees_refunds_account_country_info.balance_transaction_id
 where line_items.balance_transaction_id is not null
+and balance_transaction_reporting_category = 'charge' 
+-- only focus on the charges
 order by
   balance_transaction_created_at,
   balance_transaction_id,

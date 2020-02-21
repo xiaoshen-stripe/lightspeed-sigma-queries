@@ -36,29 +36,6 @@ currency_selection as (
 select
   'usd' as currency_selected
 ),
--- connected_account_country as (
--- select
---   id,
---   country
--- from
---   connected_accounts
--- ),
--- application_fees_account_country_info as (
--- select
---   application_fees.balance_transaction_id,
---   connected_account_country.country
--- from
---   application_fees
---   join connected_account_country on application_fees.account_id = connected_account_country.id
--- ),
--- application_fees_refunds_account_country_info as (
--- select
---   connected_account_application_fee_refunds.balance_transaction_id,
---   connected_account_country.country
--- from
---   connected_account_application_fee_refunds
---   join connected_account_country on connected_account_application_fee_refunds.account = connected_account_country.id
--- ),
 non_fee_activity_partial as (
   select
     bts.id as balance_transaction_id,
@@ -506,16 +483,7 @@ select
      when charge_id like 'py_%' and line_items.balance_transaction_id in (select * from charge_application_fee_bts) then 'chargeback_fees'
      else 'unlinked_refunds'
   end as charge_type
-
---   coalesce(
---     connected_account_country.country,
---     application_fees_account_country_info.country,
---     application_fees_refunds_account_country_info.country
---   ) as merchant_account_country
 from line_items
--- left join connected_account_country on line_items.destination_id = connected_account_country.id
--- left join application_fees_account_country_info on line_items.balance_transaction_id = application_fees_account_country_info.balance_transaction_id
--- left join application_fees_refunds_account_country_info on line_items.balance_transaction_id = application_fees_refunds_account_country_info.balance_transaction_id
 where line_items.balance_transaction_id is not null
 and balance_transaction_reporting_category = 'charge' 
 -- only focus on the charges

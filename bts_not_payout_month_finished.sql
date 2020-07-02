@@ -22,5 +22,3 @@ where
     0,
     (date_trunc('month', current_date))
   )
-   and status = 'available'
-     

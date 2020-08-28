@@ -5,7 +5,7 @@ with calendar_days as (
   select
     date(day) as day
   from unnest(
-    sequence(date('2019-10-07'), date('2019-11-06'), interval '1' day)
+    sequence(date('2020-04-01'), date('2020-04-10'), interval '1' day)
   ) as t(day)
 ),
 
@@ -88,6 +88,43 @@ connect_account_details as (
       id,
       coalesce(business_name, business_url) as business_name 
     from connected_accounts 
+),
+--day_unlinked_refunds selects all unlinked refunds
+day_unlinked_refunds as (
+  select 
+    date(refunds.created at time zone 'America/New_York') as activity_date, 
+    connected_account_transfers.account as account,
+    sum(refunds.amount) as total_unlinked_refunds
+  from refunds 
+  left join refunds_metadata on refunds.id = refunds_metadata.refund_id 
+  left join connected_account_transfers on connected_account_transfers.id = refunds_metadata.value
+  where date(refunds.created at time zone 'America/New_York') >= (select min(calendar_days.day) from calendar_days) 
+    and date(refunds.created at time zone 'America/New_York') <= (select max(calendar_days.day) from calendar_days) 
+    and refunds.charge_id is null 
+    and refunds.status='succeeded'
+    and refunds_metadata.key = 'parent_transfer'
+  group by 1, 2
+),
+-- unlinked refund induced account debits on the merchant connected accounts
+day_unlinked_refund_account_debit as (
+  select 
+    date(connected_account_transfers.created at time zone 'America/New_York') as activity_date, 
+    connected_account_transfers.account as account,
+    sum(connected_account_transfers.amount) as unlinked_refund_account_debits
+  from connected_account_transfers 
+  left join connected_account_transfers_metadata on connected_account_transfers.id = connected_account_transfers_metadata.transfer_id
+  where date(connected_account_transfers.created at time zone 'America/New_York') >= (select min(calendar_days.day) from calendar_days) 
+    and date(connected_account_transfers.created at time zone 'America/New_York') <= (select max(calendar_days.day) from calendar_days) 
+    and not automatic
+    and destination_id = 'acct_1Ez19vFfuIutquDb'
+    and kind = 'book'
+    and not reversed
+    and source_type='card'
+    and status = 'paid'
+    and type = 'stripe_account'
+    and key = 'transaction_type'
+    and value = 'unreferenced-refund'
+    group by 1, 2
 )
 --
 -- Join temporary tables, and format output for reporting display
@@ -115,7 +152,9 @@ select
   coalesce(refunds_t2/100.0, 0) as refunds_t2,
   coalesce(refunds_t3/100.0, 0) as refunds_t3,
   coalesce(refunds_t4/100.0, 0) as refunds_t4,
-  coalesce(refunds_t5/100.0, 0) as refunds_t5
+  coalesce(refunds_t5/100.0, 0) as refunds_t5,
+  coalesce(total_unlinked_refunds/100.0, 0) as platform_unlinked_refunds,
+  coalesce(unlinked_refund_account_debits/100.0, 0) as unlinked_refund_account_debits
 from calendar_days 
 left join day_balance_transactions
   on calendar_days.day = day_balance_transactions.activity_date 
@@ -126,5 +165,9 @@ left join day_fees
 left join day_payouts 
   on calendar_days.day = day_payouts.activity_date and day_balance_transactions.account = day_payouts.account  
 left join connect_account_details 
-  on day_balance_transactions.account = connect_account_details.id 
+  on day_balance_transactions.account = connect_account_details.id
+left join day_unlinked_refunds
+  on calendar_days.day = day_unlinked_refunds.activity_date and day_balance_transactions.account = day_unlinked_refunds.account  
+left join day_unlinked_refund_account_debit
+  on calendar_days.day = day_unlinked_refund_account_debit.activity_date and day_balance_transactions.account = day_unlinked_refund_account_debit.account  
 order by destination_id asc, day asc

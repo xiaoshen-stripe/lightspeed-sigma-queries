@@ -1,3 +1,4 @@
+-- Applies for Canadian platform only, due to Interac payment region restriction
 select
   refunds.id refunds_id,
   refunds.amount refunds_amount,

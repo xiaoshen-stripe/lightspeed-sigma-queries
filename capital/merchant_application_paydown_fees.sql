@@ -1,6 +1,6 @@
 with earliest_date as (
   select
-    date '2020-11-20' as date_after
+    date '2020-11-01' as date_after 
 ),
 financing_paydown_bts as (
   select
@@ -12,7 +12,7 @@ financing_paydown_bts as (
   from
     connected_account_balance_transactions
   where
-    account = 'acct_1GGv67CmU1jXmt7F' --   change merchant account of interest
+    account = 'acct_1GGv67CmU1jXmt7F' --   change to merchant account of interest
     and type in ('financing_paydown')
     and created > (
       select
